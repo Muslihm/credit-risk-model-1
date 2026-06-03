@@ -223,17 +223,12 @@ def main():
     y_test_proba_xgb = xgb_model.predict_proba(X_test)
     test_auc_xgb = roc_auc_score(y_test, y_test_proba_xgb)
     print(f"Test AUCROC: {test_auc_xgb:.4f} - train.py:225")
-    
     # Save models
     lr_model.save('models/logistic_regression_model.joblib')
     xgb_model.save('models/xgboost_model.joblib')
-    
-    print("\n - train.py:231" + "=" * 50)
-    print("Training complete! Models saved to 'models/' directory - train.py:232")
-    print("= - train.py:233" * 50)
-    
+    print("\n - train.py:229" + "=" * 50)
+    print("Training complete! Models saved to 'models/' directory - train.py:230")
+    print("= - train.py:231" * 50)
     return lr_model, xgb_model
-
-
 if __name__ == "__main__":
     main()
