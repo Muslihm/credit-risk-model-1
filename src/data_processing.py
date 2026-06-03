@@ -1,256 +1,195 @@
 """
-Feature engineering and data preprocessing for credit risk modeling.
-Includes Weight of Evidence (WoE) transformation and feature selection.
+Simplified Credit Risk Data Processing Pipeline
+Transforms raw data into model-ready format
 """
 
 import pandas as pd
 import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from typing import List, Dict, Tuple, Optional
+from sklearn.impute import SimpleImputer
 import warnings
 warnings.filterwarnings('ignore')
 
 
-class WeightOfEvidenceEncoder(BaseEstimator, TransformerMixin):
-    """
-    Weight of Evidence (WoE) transformer for categorical/binned variables.
-    WoE = ln(% of non-events / % of events)
-    Positive WoE = Lower risk (more non-events)
-    Negative WoE = Higher risk (more events)
-    """
-    
-    def __init__(self, eps: float = 0.5):
-        """
-        Args:
-            eps: Small value to avoid log(0) or division by zero
-        """
-        self.eps = eps
-        self.woe_maps = {}
-        self.iv_values = {}  # Information Value per feature
+# ============================================
+# 1. TIME-BASED FEATURES
+# ============================================
+
+class ExtractTimeFeatures(BaseEstimator, TransformerMixin):
+    def __init__(self, time_col='TransactionStartTime'):
+        self.time_col = time_col
         
-    def fit(self, X: pd.DataFrame, y: pd.Series):
-        """Calculate WoE mappings from training data."""
-        for col in X.columns:
-            woe_map = {}
-            total_events = y.sum()
-            total_non_events = len(y) - total_events
-            
-            for category in X[col].unique():
-                mask = X[col] == category
-                n_events = y[mask].sum()
-                n_non_events = mask.sum() - n_events
-                
-                # Apply epsilon smoothing
-                event_dist = (n_events + self.eps) / (total_events + self.eps)
-                non_event_dist = (n_non_events + self.eps) / (total_non_events + self.eps)
-                
-                woe = np.log(non_event_dist / event_dist)
-                woe_map[category] = woe
-            
-            self.woe_maps[col] = woe_map
-            
-            # Calculate Information Value
-            iv = 0
-            for category, woe in woe_map.items():
-                mask = X[col] == category
-                n_events = y[mask].sum()
-                n_non_events = mask.sum() - n_events
-                
-                event_pct = (n_events + self.eps) / (total_events + self.eps)
-                non_event_pct = (n_non_events + self.eps) / (total_non_events + self.eps)
-                
-                iv += (non_event_pct - event_pct) * woe
-            
-            self.iv_values[col] = iv
+    def fit(self, X, y=None):
+        return self
+    
+    def transform(self, X, y=None):
+        df = X.copy()
+        if self.time_col in df.columns:
+            df[self.time_col] = pd.to_datetime(df[self.time_col])
+            df['hour'] = df[self.time_col].dt.hour
+            df['day_of_month'] = df[self.time_col].dt.day
+            df['month'] = df[self.time_col].dt.month
+            df['year'] = df[self.time_col].dt.year
+            df['day_of_week'] = df[self.time_col].dt.dayofweek
+            df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
+            df['is_business_hour'] = df['hour'].between(9, 17).astype(int)
+            df = df.drop(columns=[self.time_col])
+        return df
+
+
+# ============================================
+# 2. HANDLE MISSING VALUES
+# ============================================
+
+class HandleMissingValues(BaseEstimator, TransformerMixin):
+    def fit(self, X, y=None):
+        self.num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+        self.cat_cols = X.select_dtypes(include=['object']).columns.tolist()
+        
+        if len(self.num_cols) > 0:
+            self.num_imputer = SimpleImputer(strategy='median')
+            self.num_imputer.fit(X[self.num_cols])
+        
+        if len(self.cat_cols) > 0:
+            self.cat_imputer = SimpleImputer(strategy='constant', fill_value='MISSING')
+            self.cat_imputer.fit(X[self.cat_cols])
         
         return self
     
-    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        """Apply WoE transformation."""
-        X_transformed = X.copy()
-        for col in X.columns:
-            if col in self.woe_maps:
-                X_transformed[col] = X[col].map(self.woe_maps[col]).fillna(0)
-        return X_transformed
+    def transform(self, X, y=None):
+        df = X.copy()
+        if len(self.num_cols) > 0:
+            df[self.num_cols] = self.num_imputer.transform(df[self.num_cols])
+        if len(self.cat_cols) > 0:
+            df[self.cat_cols] = self.cat_imputer.transform(df[self.cat_cols])
+        return df
 
 
-def calculate_iv_woe(df: pd.DataFrame, target_col: str, feature_cols: List[str]) -> pd.DataFrame:
-    """
-    Calculate Information Value and Weight of Evidence for all features.
+# ============================================
+# 3. ENCODE CATEGORICAL VARIABLES
+# ============================================
+
+class EncodeCategorical(BaseEstimator, TransformerMixin):
+    def fit(self, X, y=None):
+        self.cat_cols = X.select_dtypes(include=['object']).columns.tolist()
+        # Remove ID columns
+        id_cols = ['TransactionId', 'BatchId', 'AccountId', 'SubscriptionId', 'CustomerId']
+        self.cat_cols = [c for c in self.cat_cols if c not in id_cols]
+        # Only encode columns with <= 20 unique values
+        self.cat_cols = [c for c in self.cat_cols if X[c].nunique() <= 20]
+        return self
     
-    Args:
-        df: Input dataframe
-        target_col: Name of target column (0 = non-default, 1 = default)
-        feature_cols: List of feature column names
-    
-    Returns:
-        DataFrame with IV scores for each feature
-    """
-    iv_results = []
-    
-    for col in feature_cols:
-        # Bin continuous variables
-        if df[col].dtype in ['float64', 'int64'] and df[col].nunique() > 10:
-            df[f'{col}_binned'] = pd.qcut(df[col], q=10, duplicates='drop')
-            col_to_use = f'{col}_binned'
-        else:
-            col_to_use = col
-        
-        # Calculate distribution
-        grouped = df.groupby(col_to_use)[target_col].agg(['sum', 'count'])
-        grouped.columns = ['events', 'total']
-        grouped['non_events'] = grouped['total'] - grouped['events']
-        
-        total_events = df[target_col].sum()
-        total_non_events = len(df) - total_events
-        
-        # Add smoothing
-        grouped['event_pct'] = (grouped['events'] + 0.5) / (total_events + 0.5)
-        grouped['non_event_pct'] = (grouped['non_events'] + 0.5) / (total_non_events + 0.5)
-        
-        # Calculate WoE and IV
-        grouped['woe'] = np.log(grouped['non_event_pct'] / grouped['event_pct'])
-        grouped['iv_contrib'] = (grouped['non_event_pct'] - grouped['event_pct']) * grouped['woe']
-        
-        iv = grouped['iv_contrib'].sum()
-        
-        iv_results.append({
-            'feature': col,
-            'information_value': iv,
-            'predictive_power': _iv_strength(iv)
-        })
-        
-        # Clean up temporary column
-        if f'{col}_binned' in df.columns:
-            df.drop(columns=[f'{col}_binned'], inplace=True)
-    
-    return pd.DataFrame(iv_results).sort_values('information_value', ascending=False)
+    def transform(self, X, y=None):
+        df = X.copy()
+        if len(self.cat_cols) > 0:
+            encoded = pd.get_dummies(df[self.cat_cols], drop_first=True)
+            df = df.drop(columns=self.cat_cols)
+            df = pd.concat([df, encoded], axis=1)
+        return df
 
 
-def _iv_strength(iv: float) -> str:
-    """Classify IV strength based on industry standards."""
-    if iv < 0.02:
-        return 'Not predictive'
-    elif iv < 0.1:
-        return 'Weak'
-    elif iv < 0.3:
-        return 'Medium'
-    elif iv < 0.5:
-        return 'Strong'
-    else:
-        return 'Suspiciously high (overfitting)'
+# ============================================
+# 4. SCALE NUMERICAL FEATURES
+# ============================================
+
+class ScaleFeatures(BaseEstimator, TransformerMixin):
+    def fit(self, X, y=None):
+        self.num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+        if len(self.num_cols) > 0:
+            self.scaler = StandardScaler()
+            self.scaler.fit(X[self.num_cols])
+        return self
+    
+    def transform(self, X, y=None):
+        df = X.copy()
+        if len(self.num_cols) > 0:
+            df[self.num_cols] = self.scaler.transform(df[self.num_cols])
+        return df
 
 
-def select_features_by_iv(df: pd.DataFrame, target_col: str, features: List[str], 
-                          iv_threshold: float = 0.02) -> List[str]:
-    """
-    Select features based on Information Value threshold.
+# ============================================
+# 5. DROP ID COLUMNS
+# ============================================
+
+class DropIdColumns(BaseEstimator, TransformerMixin):
+    def __init__(self):
+        self.id_cols = ['TransactionId', 'BatchId', 'AccountId', 'SubscriptionId', 'CustomerId']
     
-    Args:
-        df: Input dataframe
-        target_col: Target column name
-        features: List of candidate features
-        iv_threshold: Minimum IV to keep feature (default 0.02)
+    def fit(self, X, y=None):
+        return self
     
-    Returns:
-        List of selected feature names
-    """
-    iv_df = calculate_iv_woe(df, target_col, features)
-    selected = iv_df[iv_df['information_value'] >= iv_threshold]['feature'].tolist()
-    
-    print(f"Selected {len(selected)} features out of {len(features)} (IV >= {iv_threshold}) - data_processing.py:162")
-    print("\nTop 5 features by IV: - data_processing.py:163")
-    print(iv_df.head())
-    
-    return selected
+    def transform(self, X, y=None):
+        df = X.copy()
+        cols_to_drop = [c for c in self.id_cols if c in df.columns]
+        if cols_to_drop:
+            df = df.drop(columns=cols_to_drop)
+        return df
 
 
-def handle_missing_values(df: pd.DataFrame, threshold: float = 0.5) -> pd.DataFrame:
-    """
-    Handle missing values by dropping columns with > threshold missing and
-    imputing remaining with median for numerical, mode for categorical.
-    
-    Args:
-        df: Input dataframe
-        threshold: Maximum allowed missing fraction (default 0.5 = 50%)
-    
-    Returns:
-        Cleaned dataframe
-    """
-    missing_ratio = df.isnull().mean()
-    cols_to_drop = missing_ratio[missing_ratio > threshold].index.tolist()
-    
-    if cols_to_drop:
-        print(f"Dropping columns with >{threshold*100}% missing: {cols_to_drop} - data_processing.py:185")
-        df = df.drop(columns=cols_to_drop)
-    
-    # Impute remaining
-    for col in df.columns:
-        if df[col].isnull().any():
-            if df[col].dtype in ['float64', 'int64']:
-                df[col].fillna(df[col].median(), inplace=True)
-            else:
-                df[col].fillna(df[col].mode()[0] if not df[col].mode().empty else 'MISSING', inplace=True)
-    
-    return df
+# ============================================
+# 6. CREATE COMPLETE PIPELINE
+# ============================================
+
+def create_pipeline():
+    """Create complete data processing pipeline"""
+    return Pipeline([
+        ('drop_ids', DropIdColumns()),
+        ('time_features', ExtractTimeFeatures()),
+        ('handle_missing', HandleMissingValues()),
+        ('encode_categorical', EncodeCategorical()),
+        ('scale_features', ScaleFeatures())
+    ])
 
 
-def create_credit_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Create derived features commonly used in credit scoring.
-    
-    Args:
-        df: Input dataframe with base credit variables
-    
-    Returns:
-        Dataframe with additional engineered features
-    """
-    df = df.copy()
-    
-    # Debt-to-Income ratio (if columns exist)
-    if 'debt' in df.columns and 'income' in df.columns:
-        df['debt_to_income'] = df['debt'] / (df['income'] + 1)
-    
-    # Credit utilization (if columns exist)
-    if 'credit_balance' in df.columns and 'credit_limit' in df.columns:
-        df['utilization_rate'] = df['credit_balance'] / (df['credit_limit'] + 1)
-    
-    # Average age of accounts (if age columns exist)
-    age_cols = [col for col in df.columns if 'age' in col.lower()]
-    if len(age_cols) > 0:
-        df['avg_account_age'] = df[age_cols].mean(axis=1)
-    
-    return df
+# ============================================
+# 7. MAIN EXECUTION
+# ============================================
 
-
-def prepare_training_data(df: pd.DataFrame, target_col: str = 'default') -> Tuple[pd.DataFrame, pd.Series]:
-    """
-    Complete data preparation pipeline for credit risk modeling.
+def main():
+    print("= - data_processing.py:151"*60)
+    print("CREDIT RISK DATA PROCESSING PIPELINE - data_processing.py:152")
+    print("= - data_processing.py:153"*60)
     
-    Args:
-        df: Raw dataframe
-        target_col: Target column name
+    # Load data
+    print("\n1. Loading data... - data_processing.py:156")
+    df = pd.read_excel('../data/data.xlsx')
+    print(f"✓ Loaded {df.shape[0]:,} rows, {df.shape[1]} columns - data_processing.py:158")
     
-    Returns:
-        Tuple of (features DataFrame, target Series)
-    """
-    print("Starting data preparation pipeline... - data_processing.py:238")
-    
-    # Separate target
+    # Split features and target
+    target_col = 'FraudResult'
     if target_col in df.columns:
-        y = df[target_col].copy()
         X = df.drop(columns=[target_col])
+        y = df[target_col]
+        print(f"\n   Target: {target_col} - data_processing.py:165")
+        print(f"Fraud rate: {y.mean():.2%} - data_processing.py:166")
     else:
-        raise ValueError(f"Target column '{target_col}' not found in dataframe")
+        X = df
+        y = None
+        print("\n   No target column found - data_processing.py:170")
     
-    # Handle missing values
-    X = handle_missing_values(X)
+    # Create and apply pipeline
+    print("\n2. Creating pipeline... - data_processing.py:173")
+    pipeline = create_pipeline()
     
-    # Create derived features
-    X = create_credit_features(X)
+    print("\n3. Processing data... - data_processing.py:176")
+    X_processed = pipeline.fit_transform(X, y)
     
-    print(f"Final dataset shape: {X.shape} - data_processing.py:253")
-    print(f"Default rate: {y.mean():.2%} - data_processing.py:254")
+    print(f"\n4. Results: - data_processing.py:179")
+    print(f"Original shape: {X.shape} - data_processing.py:180")
+    print(f"Processed shape: {X_processed.shape} - data_processing.py:181")
+    print(f"Features created: {X_processed.shape[1]} - data_processing.py:182")
     
-    return X, y
+    print("\n5. Sample of processed data (first 5 rows, first 5 columns): - data_processing.py:184")
+    print(X_processed.iloc[:5, :5])
+    
+    print("\n - data_processing.py:187" + "="*60)
+    print("✓ SUCCESS! Pipeline ready for model training - data_processing.py:188")
+    print("= - data_processing.py:189"*60)
+    
+    return X_processed, y, pipeline
+
+
+if __name__ == "__main__":
+    X, y, pipeline = main()

@@ -22,7 +22,7 @@ notebook_content = {
     "sns.set_palette(\"husl\")\n",
     "pd.set_option('display.max_columns', None)\n",
     "\n",
-    "print(\"Libraries loaded!\")"
+    "print(\"Libraries loaded!\") - create_eda_notebook.py:25"
    ]
   },
   {
@@ -34,7 +34,7 @@ notebook_content = {
     "# Load your Excel data\n",
     "df = pd.read_excel('data/data.xlsx')\n",
     "\n",
-    "print(f\"Data loaded: {df.shape}\")\n",
+    "print(f\"Data loaded: {df.shape}\")\n - create_eda_notebook.py:37",
     "df.head()"
    ]
   },
@@ -45,10 +45,10 @@ notebook_content = {
    "outputs": [],
    "source": [
     "# Data overview\n",
-    "print(\"Data Types:\")\n",
-    "print(df.dtypes)\n",
-    "print(\"\\n\" + \"=\"*50)\n",
-    "print(\"Dataset Info:\")\n",
+    "print(\"Data Types:\")\n - create_eda_notebook.py:48",
+    "print(df.dtypes)\n - create_eda_notebook.py:49",
+    "print(\"\\n\" + \"=\"*50)\n - create_eda_notebook.py:50",
+    "print(\"Dataset Info:\")\n - create_eda_notebook.py:51",
     "df.info()"
    ]
   },
@@ -60,7 +60,7 @@ notebook_content = {
    "source": [
     "# Summary statistics\n",
     "num_cols = df.select_dtypes(include=[np.number]).columns\n",
-    "print(\"Summary Statistics:\")\n",
+    "print(\"Summary Statistics:\")\n - create_eda_notebook.py:63",
     "df[num_cols].describe()"
    ]
   },
@@ -71,9 +71,9 @@ notebook_content = {
    "outputs": [],
    "source": [
     "# Check for missing values\n",
-    "print(\"Missing Values:\")\n",
-    "print(df.isnull().sum())\n",
-    "print(f\"\\nTotal missing: {df.isnull().sum().sum()}\")"
+    "print(\"Missing Values:\")\n - create_eda_notebook.py:74",
+    "print(df.isnull().sum())\n - create_eda_notebook.py:75",
+    "print(f\"\\nTotal missing: {df.isnull().sum().sum()}\") - create_eda_notebook.py:76"
    ]
   }
  ],
@@ -107,5 +107,5 @@ os.makedirs('notebooks', exist_ok=True)
 with open('notebooks/eda.ipynb', 'w', encoding='utf-8') as f:
     json.dump(notebook_content, f, indent=1, ensure_ascii=False)
 
-print("✅ Notebook created at: notebooks/eda.ipynb")
-print("📓 Open with: jupyter notebook notebooks/eda.ipynb")
+print("✅ Notebook created at: notebooks/eda.ipynb - create_eda_notebook.py:110")
+print("📓 Open with: jupyter notebook notebooks/eda.ipynb - create_eda_notebook.py:111")
