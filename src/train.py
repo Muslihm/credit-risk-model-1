@@ -117,7 +117,6 @@ class CreditRiskModel:
     def _calculate_metrics(self, y_true: pd.Series, y_pred_proba: np.ndarray) -> Dict[str, Any]:
         """Calculate model performance metrics."""
         auc = roc_auc_score(y_true, y_pred_proba)
-        
         # Use 0.5 threshold for confusion matrix
         y_pred = (y_pred_proba >= 0.5).astype(int)
         cm = confusion_matrix(y_true, y_pred)
@@ -131,7 +130,7 @@ class CreditRiskModel:
         }
     
     def save(self, path: str):
-        """Save model and preprocessing objects."""
+    """Save model and preprocessing objects."""
         save_path = Path(path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         
@@ -223,17 +222,15 @@ def main():
     y_test_proba_xgb = xgb_model.predict_proba(X_test)
     test_auc_xgb = roc_auc_score(y_test, y_test_proba_xgb)
     print(f"Test AUCROC: {test_auc_xgb:.4f} - train.py:225")
-    
     # Save models
     lr_model.save('models/logistic_regression_model.joblib')
     xgb_model.save('models/xgboost_model.joblib')
-    
-    print("\n - train.py:231" + "=" * 50)
-    print("Training complete! Models saved to 'models/' directory - train.py:232")
-    print("= - train.py:233" * 50)
-    
-    return lr_model, xgb_model
-
+    print("\n - train.py:229" + "=" * 50)
+    print("Training complete! Models saved to 'models/' directory - train.py:230")
+    print("= - train.py:231" * 50)
+    return lr_model, xgb_model 
 
 if __name__ == "__main__":
+    
     main()
+
