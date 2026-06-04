@@ -1,194 +1,191 @@
 """
-Unit tests for data processing module.
+Unit tests for data processing module
 """
 
 import pytest
 import pandas as pd
 import numpy as np
+import sys
+import os
+
+# Add the parent directory to path so src can be imported
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+# Now import from src
 from src.data_processing import (
-    WeightOfEvidenceEncoder,
-    calculate_iv_woe,
-    handle_missing_values,
-    create_credit_features,
-    select_features_by_iv
+    ExtractTimeFeatures,
+    HandleMissingValues,
+    EncodeCategorical,
+    ScaleFeatures,
+    DropIdColumns,
+    RiskTargetEngineer
 )
 
 
-class TestWeightOfEvidenceEncoder:
-    """Test cases for WoE encoder."""
-    
-    def test_woe_fit_transform(self):
-        """Test that WoE transforms correctly."""
-        # Create sample data
-        X = pd.DataFrame({
-            'cat1': ['A', 'B', 'A', 'B', 'A'],
-            'cat2': ['X', 'X', 'Y', 'Y', 'X']
-        })
-        y = pd.Series([0, 1, 0, 1, 0])
-        
-        encoder = WeightOfEvidenceEncoder(eps=0.5)
-        encoder.fit(X, y)
-        X_transformed = encoder.transform(X)
-        
-        # Check output shape
-        assert X_transformed.shape == X.shape
-        assert isinstance(X_transformed, pd.DataFrame)
-        
-        # Check that WoE values are finite
-        assert not X_transformed.isnull().any().any()
-    
-    def test_woe_smoking_driving_example(self):
-        """Test with classic WoE example pattern."""
-        # High risk = negative WoE
-        X = pd.DataFrame({'risk_factor': ['high', 'low', 'high', 'low', 'high']})
-        y = pd.Series([1, 0, 1, 0, 1])  # High risk group has more defaults
-        
-        encoder = WeightOfEvidenceEncoder(eps=0.5)
-        encoder.fit(X, y)
-        
-        # High risk should have negative WoE
-        assert encoder.woe_maps['risk_factor']['high'] < 0
-        # Low risk should have positive WoE
-        assert encoder.woe_maps['risk_factor']['low'] > 0
-
-
-class TestIVCalculation:
-    """Test Information Value calculation."""
-    
-    def test_iv_predictive_feature(self):
-        """Test that predictive features get higher IV."""
-        np.random.seed(42)
-        n = 1000
-        
-        # Strongly predictive feature
-        default_prob = np.where(np.random.rand(n) > 0.7, 0.3, 0.05)
-        y = np.random.binomial(1, default_prob)
-        
-        df = pd.DataFrame({
-            'strong_predictor': np.random.normal(0, 1, n),
-            'random_noise': np.random.normal(0, 1, n),
-            'target': y
-        })
-        
-        iv_df = calculate_iv_woe(df, 'target', ['strong_predictor', 'random_noise'])
-        
-        # Strong predictor should have higher IV
-        strong_iv = iv_df[iv_df['feature'] == 'strong_predictor']['information_value'].values[0]
-        noise_iv = iv_df[iv_df['feature'] == 'random_noise']['information_value'].values[0]
-        
-        assert strong_iv > noise_iv
-    
-    def test_iv_threshold_selection(self):
-        """Test feature selection by IV threshold."""
-        np.random.seed(42)
-        n = 500
-        
-        df = pd.DataFrame({
-            'good_feature': np.random.normal(0, 1, n),
-            'bad_feature': np.random.normal(0, 1, n),
-            'target': np.random.binomial(1, 0.1, n)
-        })
-        
-        # Make good_feature actually predictive
-        df['good_feature'] = df['good_feature'] + 2 * df['target']
-        
-        selected = select_features_by_iv(df, 'target', ['good_feature', 'bad_feature'], iv_threshold=0.05)
-        
-        assert 'good_feature' in selected
-        # bad_feature might be selected if it has some IV, but likely lower
-
-
-class TestMissingValueHandling:
-    """Test missing value imputation."""
-    
-    def test_drop_high_missing_columns(self):
-        """Test dropping columns with too many missing values."""
-        df = pd.DataFrame({
-            'complete': [1, 2, 3, 4, 5],
-            'high_missing': [np.nan, np.nan, np.nan, np.nan, 1],
-            'target': [0, 1, 0, 1, 0]
-        })
-        
-        df_clean = handle_missing_values(df, threshold=0.5)
-        
-        # Column with 80% missing (4/5) should be dropped
-        assert 'high_missing' not in df_clean.columns
-        assert 'complete' in df_clean.columns
-    
-    def test_median_imputation_numeric(self):
-        """Test median imputation for numeric columns."""
-        df = pd.DataFrame({
-            'numeric': [1, 2, np.nan, 4, 5],
-            'target': [0, 0, 0, 0, 0]
-        })
-        
-        df_clean = handle_missing_values(df, threshold=0.5)
-        
-        # Missing value should be replaced with median (3.0)
-        assert df_clean['numeric'].isnull().sum() == 0
-        assert df_clean['numeric'].iloc[2] == 3.0
-
-
 class TestFeatureEngineering:
-    """Test derived feature creation."""
+    """Test feature engineering components"""
     
-    def test_debt_to_income_ratio(self):
-        """Test debt-to-income ratio calculation."""
+    def test_extract_time_features(self):
+        """Test that time features are correctly extracted"""
         df = pd.DataFrame({
-            'debt': [10000, 20000, 50000],
-            'income': [50000, 40000, 100000]
+            'TransactionStartTime': ['2024-01-15 14:30:00', '2024-03-20 09:15:00']
         })
         
-        df_engineered = create_credit_features(df)
+        transformer = ExtractTimeFeatures()
+        result = transformer.fit_transform(df)
         
-        expected_ratios = [10000/50001, 20000/40001, 50000/100001]
-        np.testing.assert_array_almost_equal(
-            df_engineered['debt_to_income'].values,
-            expected_ratios,
-            decimal=5
-        )
+        # Check expected columns
+        assert 'hour' in result.columns
+        assert 'day_of_month' in result.columns
+        assert 'month' in result.columns
+        assert 'year' in result.columns
+        assert 'day_of_week' in result.columns
+        assert 'is_weekend' in result.columns
+        assert 'is_business_hour' in result.columns
+        
+        # Check values
+        assert result['hour'].iloc[0] == 14
+        assert result['is_business_hour'].iloc[0] == 1
     
-    def test_utilization_rate(self):
-        """Test credit utilization calculation."""
+    def test_handle_missing_values(self):
+        """Test missing value imputation"""
         df = pd.DataFrame({
-            'credit_balance': [500, 2000, 8000],
-            'credit_limit': [1000, 5000, 10000]
+            'numeric_col': [1, 2, np.nan, 4, 5],
+            'cat_col': ['A', 'B', np.nan, 'A', 'B']
         })
         
-        df_engineered = create_credit_features(df)
+        transformer = HandleMissingValues()
+        result = transformer.fit_transform(df)
         
-        expected_util = [500/1001, 2000/5001, 8000/10001]
-        np.testing.assert_array_almost_equal(
-            df_engineered['utilization_rate'].values,
-            expected_util,
-            decimal=5
-        )
-
-
-class TestDataValidation:
-    """Test data quality checks."""
+        # No missing values should remain
+        assert result.isnull().sum().sum() == 0
+        
+        # Numeric column should have median (3.0)
+        assert result['numeric_col'].iloc[2] == 3.0
     
-    def test_default_rate_range(self):
-        """Test that default rate is within expected range."""
+    def test_encode_categorical(self):
+        """Test one-hot encoding of categorical variables"""
+        df = pd.DataFrame({
+            'color': ['red', 'blue', 'red', 'green'],
+            'size': ['S', 'M', 'L', 'M']
+        })
+        
+        transformer = EncodeCategorical()
+        result = transformer.fit_transform(df)
+        
+        # Original columns should be dropped
+        assert 'color' not in result.columns
+        assert 'size' not in result.columns
+        
+        # Encoded columns should exist
+        encoded_cols = [c for c in result.columns if c.startswith('color_') or c.startswith('size_')]
+        assert len(encoded_cols) > 0
+    
+    def test_scale_features(self):
+        """Test feature standardization"""
+        df = pd.DataFrame({
+            'amount': [100, 200, 300, 400, 500],
+            'value': [10, 20, 30, 40, 50]
+        })
+        
+        transformer = ScaleFeatures()
+        result = transformer.fit_transform(df)
+        
+        # After standardization, mean should be ~0, std ~1
+        assert abs(result['amount'].mean()) < 1e-10
+        assert abs(result['amount'].std() - 1) < 0.1
+    
+    def test_drop_id_columns(self):
+        """Test dropping of ID columns"""
+        df = pd.DataFrame({
+            'TransactionId': [1, 2, 3],
+            'CustomerId': [100, 101, 102],
+            'Amount': [10, 20, 30],
+            'Value': [100, 200, 300]
+        })
+        
+        transformer = DropIdColumns()
+        result = transformer.fit_transform(df)
+        
+        # ID columns should be dropped
+        assert 'TransactionId' not in result.columns
+        assert 'CustomerId' not in result.columns
+        
+        # Data columns should remain
+        assert 'Amount' in result.columns
+        assert 'Value' in result.columns
+
+
+class TestTargetEngineering:
+    """Test target variable engineering"""
+    
+    def test_rfm_calculation(self):
+        """Test RFM metrics calculation"""
+        df = pd.DataFrame({
+            'CustomerId': ['A', 'A', 'B', 'B', 'C'],
+            'TransactionStartTime': ['2024-01-01', '2024-01-15', '2024-01-10', '2024-01-20', '2024-01-05'],
+            'Amount': [100, 200, 150, 250, 300]
+        })
+        
+        engineer = RiskTargetEngineer(random_state=42)
+        rfm = engineer.calculate_rfm(df)
+        
+        assert 'recency_days' in rfm.columns
+        assert 'frequency' in rfm.columns
+        assert 'monetary' in rfm.columns
+        assert len(rfm) == 3
+    
+    def test_clustering_output(self):
+        """Test that clustering produces valid outputs"""
         np.random.seed(42)
-        y = pd.Series(np.random.binomial(1, 0.1, 1000))
-        
-        assert 0 <= y.mean() <= 1
-        assert y.mean() > 0  # Should have some defaults
-        assert y.mean() < 0.3  # Default rate shouldn't be extremely high
-    
-    def test_feature_correlation(self):
-        """Test that features aren't perfectly correlated."""
-        df = pd.DataFrame({
-            'feat1': np.random.normal(0, 1, 100),
-            'feat2': np.random.normal(0, 1, 100),
-            'feat3': np.random.normal(0, 1, 100)
+        rfm_df = pd.DataFrame({
+            'CustomerId': [f'C{i}' for i in range(50)],
+            'recency_days': np.random.exponential(30, 50),
+            'frequency': np.random.poisson(5, 50),
+            'monetary': np.random.gamma(2, 500, 50)
         })
         
-        corr_matrix = df.corr()
+        engineer = RiskTargetEngineer(random_state=42)
+        rfm_prepared, rfm_scaled = engineer.prepare_for_clustering(rfm_df)
+        result = engineer.cluster_and_label(rfm_prepared, rfm_scaled)
         
-        # No feature should be perfectly correlated with another
-        for i in range(len(corr_matrix)):
-            for j in range(len(corr_matrix)):
-                if i != j:
-                    assert abs(corr_matrix.iloc[i, j]) < 0.99
+        assert 'CustomerId' in result.columns
+        assert 'is_high_risk' in result.columns
+        assert result['is_high_risk'].isin([0, 1]).all()
+
+
+class TestProcessedData:
+    """Test the final processed data"""
+    
+    def test_processed_data_has_target_column(self):
+        """Test that processed data contains the is_high_risk target column"""
+        paths = ['data/processed_data.csv', '../data/processed_data.csv']
+        df = None
+        for path in paths:
+            if os.path.exists(path):
+                df = pd.read_csv(path)
+                break
+        
+        if df is None:
+            pytest.skip("Processed data not found - run src/data_processing.py first")
+        
+        assert 'is_high_risk' in df.columns
+        assert df['is_high_risk'].isin([0, 1]).all()
+    
+    def test_no_missing_values_in_processed_data(self):
+        """Test that processed data has no missing values"""
+        paths = ['data/processed_data.csv', '../data/processed_data.csv']
+        df = None
+        for path in paths:
+            if os.path.exists(path):
+                df = pd.read_csv(path)
+                break
+        
+        if df is None:
+            pytest.skip("Processed data not found - run src/data_processing.py first")
+        
+        assert df.isnull().sum().sum() == 0
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, '-v'])
