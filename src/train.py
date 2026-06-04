@@ -1,239 +1,383 @@
 """
-Model training pipeline for credit risk scoring.
-Supports Logistic Regression (interpretable) and XGBoost (high performance).
+Model Training and Tracking for Credit Risk/Fraud Detection
 """
 
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split, cross_val_score
+import os
+import warnings
+warnings.filterwarnings('ignore')
+
+# Set environment variable to allow file store BEFORE importing mlflow
+os.environ['MLFLOW_ALLOW_FILE_STORE'] = 'true'
+
+import mlflow
+import mlflow.sklearn
+from mlflow.models import infer_signature
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import roc_auc_score, confusion_matrix, classification_report
-import xgboost as xgb
+from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    roc_auc_score, confusion_matrix, roc_curve
+)
 import joblib
-from pathlib import Path
-import json
-from typing import Dict, Any, Tuple
 
-from src.data_processing import prepare_training_data, WeightOfEvidenceEncoder, select_features_by_iv
+# Set MLflow tracking URI
+mlflow.set_tracking_uri("mlruns")
+os.makedirs("mlruns", exist_ok=True)
 
 
-class CreditRiskModel:
-    """Wrapper class for credit risk models with unified interface."""
+class CreditRiskModelTrainer:
+    """Complete model training pipeline with MLflow integration"""
     
-    def __init__(self, model_type: str = 'logistic_regression'):
-        """
-        Args:
-            model_type: Either 'logistic_regression' or 'xgboost'
-        """
-        self.model_type = model_type
-        self.model = None
-        self.woe_encoder = None
-        self.scaler = None
-        self.selected_features = None
+    def __init__(self, random_state=42, test_size=0.3):
+        self.random_state = random_state
+        self.test_size = test_size
+        self.X_train = None
+        self.X_test = None
+        self.y_train = None
+        self.y_test = None
+        self.models = {}
+        self.results = {}
+        self.best_model = None
+        self.best_model_name = None
         
-    def train(self, X: pd.DataFrame, y: pd.Series, 
-              use_woe: bool = True, **kwargs) -> Dict[str, Any]:
-        """
-        Train the credit risk model.
+    def clean_data(self, df):
+        """Clean the data: remove non-numeric columns and handle strings"""
+        df_clean = df.copy()
         
-        Args:
-            X: Feature dataframe
-            y: Target series
-            use_woe: Apply WoE transformation (only for logistic regression)
-            **kwargs: Additional model parameters
+        # Drop CustomerId if it exists
+        if 'CustomerId' in df_clean.columns:
+            df_clean = df_clean.drop(columns=['CustomerId'])
         
-        Returns:
-            Dictionary with training metrics
-        """
-        # Feature selection using IV
-        feature_cols = X.columns.tolist()
-        self.selected_features = select_features_by_iv(
-            pd.concat([X, y], axis=1), 
-            y.name if hasattr(y, 'name') else 'target',
-            feature_cols,
-            iv_threshold=kwargs.get('iv_threshold', 0.02)
+        # Convert boolean columns to int (True/False -> 1/0)
+        bool_cols = df_clean.select_dtypes(include=['bool']).columns
+        for col in bool_cols:
+            df_clean[col] = df_clean[col].astype(int)
+        
+        # For any remaining object/string columns, try to convert or drop
+        string_cols = df_clean.select_dtypes(include=['object']).columns
+        for col in string_cols:
+            # Try to convert to numeric
+            df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
+        
+        # Fill any NaN with 0
+        df_clean = df_clean.fillna(0)
+        
+        return df_clean
+    
+    def load_and_split_data(self, data_path=None):
+        """Load processed data and split into train/test sets"""
+        print("="*60)
+        print("1. DATA PREPARATION")
+        print("="*60)
+        
+        # Try multiple paths
+        possible_paths = [
+            'data/processed_data.csv',
+            '../data/processed_data.csv',
+            'processed_data.csv',
+        ]
+        
+        if data_path:
+            possible_paths.insert(0, data_path)
+        
+        df = None
+        for path in possible_paths:
+            if os.path.exists(path):
+                print(f"\n✅ Loading data from: {path}")
+                df = pd.read_csv(path)
+                break
+        
+        if df is None:
+            raise FileNotFoundError("Could not find processed_data.csv")
+        
+        print(f"Original shape: {df.shape}")
+        
+        # Clean the data
+        print("\nCleaning data (converting strings to numbers)...")
+        df = self.clean_data(df)
+        print(f"Cleaned shape: {df.shape}")
+        
+        # Separate features and target
+        target_col = 'is_high_risk'
+        if target_col not in df.columns:
+            raise ValueError(f"Target column '{target_col}' not found")
+        
+        # Drop any remaining non-numeric columns
+        X = df.drop(columns=[target_col])
+        y = df[target_col]
+        
+        # Ensure all columns are numeric
+        for col in X.columns:
+            if X[col].dtype == 'object':
+                print(f"Converting {col} to numeric...")
+                X[col] = pd.to_numeric(X[col], errors='coerce').fillna(0)
+        
+        print(f"\nTarget distribution:")
+        print(f"  Class 0 (Low Risk): {(y==0).sum():,} ({(y==0).mean()*100:.1f}%)")
+        print(f"  Class 1 (High Risk): {(y==1).sum():,} ({(y==1).mean()*100:.1f}%)")
+        
+        # Split data
+        self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
+            X, y, test_size=self.test_size, random_state=self.random_state, stratify=y
         )
         
-        X_filtered = X[self.selected_features].copy()
+        print(f"\nTrain set: {self.X_train.shape[0]:,} samples")
+        print(f"Test set: {self.X_test.shape[0]:,} samples")
+        print(f"Features: {self.X_train.shape[1]}")
         
-        # Apply WoE for logistic regression
-        if self.model_type == 'logistic_regression' and use_woe:
-            print("Applying Weight of Evidence transformation... - train.py:62")
-            self.woe_encoder = WeightOfEvidenceEncoder()
-            X_transformed = self.woe_encoder.fit_transform(X_filtered, y)
-            
-            # Scale features
-            self.scaler = StandardScaler()
-            X_processed = self.scaler.fit_transform(X_transformed)
-            
-            # Train logistic regression
-            C = kwargs.get('C', 1.0)
-            self.model = LogisticRegression(C=C, max_iter=1000, random_state=42)
-            
-        elif self.model_type == 'xgboost':
-            print("Training XGBoost model... - train.py:75")
-            params = {
-                'n_estimators': kwargs.get('n_estimators', 100),
-                'max_depth': kwargs.get('max_depth', 6),
-                'learning_rate': kwargs.get('learning_rate', 0.1),
-                'subsample': kwargs.get('subsample', 0.8),
-                'colsample_bytree': kwargs.get('colsample_bytree', 0.8),
-                'random_state': 42,
-                'eval_metric': 'auc'
-            }
-            self.model = xgb.XGBClassifier(**params)
-            X_processed = X_filtered  # XGBoost handles raw features
-            
-        else:
-            raise ValueError(f"Unknown model type: {self.model_type}")
-        
-        # Train the model
-        self.model.fit(X_processed, y)
-        
-        # Calculate metrics
-        y_pred_proba = self.predict_proba(X)
-        metrics = self._calculate_metrics(y, y_pred_proba)
-        
-        return metrics
+        return self.X_train, self.X_test, self.y_train, self.y_test
     
-    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
-        """Predict default probability."""
-        X_filtered = X[self.selected_features].copy()
+    def _evaluate_model(self, model, X_test, y_test, model_name):
+        """Evaluate model and return metrics"""
+        y_pred = model.predict(X_test)
+        y_pred_proba = model.predict_proba(X_test)[:, 1]
         
-        if self.model_type == 'logistic_regression' and self.woe_encoder is not None:
-            X_transformed = self.woe_encoder.transform(X_filtered)
-            X_processed = self.scaler.transform(X_transformed)
-        else:
-            X_processed = X_filtered
-        
-        return self.model.predict_proba(X_processed)[:, 1]
-    
-    def predict(self, X: pd.DataFrame, threshold: float = 0.5) -> np.ndarray:
-        """Predict binary default outcome."""
-        proba = self.predict_proba(X)
-        return (proba >= threshold).astype(int)
-    
-    def _calculate_metrics(self, y_true: pd.Series, y_pred_proba: np.ndarray) -> Dict[str, Any]:
-        """Calculate model performance metrics."""
-        auc = roc_auc_score(y_true, y_pred_proba)
-        
-        # Use 0.5 threshold for confusion matrix
-        y_pred = (y_pred_proba >= 0.5).astype(int)
-        cm = confusion_matrix(y_true, y_pred)
-        
-        return {
-            'model_type': self.model_type,
-            'auc_roc': auc,
-            'gini': 2 * auc - 1,  # Gini = 2*AUC - 1
-            'confusion_matrix': cm.tolist(),
-            'accuracy': (cm[0,0] + cm[1,1]) / cm.sum()
+        metrics = {
+            'accuracy': accuracy_score(y_test, y_pred),
+            'precision': precision_score(y_test, y_pred, zero_division=0),
+            'recall': recall_score(y_test, y_pred, zero_division=0),
+            'f1_score': f1_score(y_test, y_pred, zero_division=0),
+            'roc_auc': roc_auc_score(y_test, y_pred_proba)
         }
-    
-    def save(self, path: str):
-        """Save model and preprocessing objects."""
-        save_path = Path(path)
-        save_path.parent.mkdir(parents=True, exist_ok=True)
         
-        artifacts = {
-            'model': self.model,
-            'model_type': self.model_type,
-            'selected_features': self.selected_features,
-            'woe_encoder': self.woe_encoder,
-            'scaler': self.scaler
-        }
-        joblib.dump(artifacts, save_path)
-        print(f"Model saved to {save_path} - train.py:146")
+        return metrics, y_pred, y_pred_proba
     
-    def load(self, path: str):
-        """Load model and preprocessing objects."""
-        artifacts = joblib.load(path)
-        self.model = artifacts['model']
-        self.model_type = artifacts['model_type']
-        self.selected_features = artifacts['selected_features']
-        self.woe_encoder = artifacts['woe_encoder']
-        self.scaler = artifacts['scaler']
-        print(f"Model loaded from {path} - train.py:156")
+    def _log_confusion_matrix(self, y_test, y_pred, model_name):
+        """Create and log confusion matrix plot"""
+        cm = confusion_matrix(y_test, y_pred)
+        plt.figure(figsize=(6, 5))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                    xticklabels=['Low Risk', 'High Risk'],
+                    yticklabels=['Low Risk', 'High Risk'])
+        plt.title(f'Confusion Matrix - {model_name}')
+        plt.ylabel('Actual')
+        plt.xlabel('Predicted')
+        
+        os.makedirs('plots', exist_ok=True)
+        plot_path = f'plots/confusion_matrix_{model_name}.png'
+        plt.savefig(plot_path)
+        plt.close()
+        
+        return plot_path
+    
+    def _log_roc_curve(self, y_test, y_pred_proba, model_name):
+        """Create and log ROC curve plot"""
+        fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
+        auc = roc_auc_score(y_test, y_pred_proba)
+        
+        plt.figure(figsize=(6, 5))
+        plt.plot(fpr, tpr, label=f'{model_name} (AUC = {auc:.4f})')
+        plt.plot([0, 1], [0, 1], 'k--', label='Random')
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title(f'ROC Curve - {model_name}')
+        plt.legend()
+        
+        plot_path = f'plots/roc_curve_{model_name}.png'
+        plt.savefig(plot_path)
+        plt.close()
+        
+        return plot_path
+    
+    def train_logistic_regression(self):
+        """Train Logistic Regression model"""
+        print("\n" + "="*60)
+        print("TRAINING LOGISTIC REGRESSION")
+        print("="*60)
+        
+        with mlflow.start_run(run_name="Logistic_Regression", nested=True):
+            model = LogisticRegression(
+                random_state=self.random_state,
+                class_weight='balanced',
+                max_iter=1000,
+                C=0.1
+            )
+            model.fit(self.X_train, self.y_train)
+            
+            metrics, y_pred, y_pred_proba = self._evaluate_model(model, self.X_test, self.y_test, "Logistic Regression")
+            
+            mlflow.log_params(model.get_params())
+            mlflow.log_metrics(metrics)
+            mlflow.log_artifact(self._log_confusion_matrix(self.y_test, y_pred, "Logistic_Regression"))
+            mlflow.log_artifact(self._log_roc_curve(self.y_test, y_pred_proba, "Logistic_Regression"))
+            
+            signature = infer_signature(self.X_train, model.predict(self.X_train))
+            mlflow.sklearn.log_model(model, "logistic_regression_model", signature=signature)
+            
+            print("\nMetrics:")
+            for metric, value in metrics.items():
+                print(f"  {metric}: {value:.4f}")
+            
+            self.models['Logistic Regression'] = model
+            self.results['Logistic Regression'] = metrics
+            
+            return model, metrics
+    
+    def train_random_forest(self):
+        """Train Random Forest model"""
+        print("\n" + "="*60)
+        print("TRAINING RANDOM FOREST")
+        print("="*60)
+        
+        with mlflow.start_run(run_name="Random_Forest", nested=True):
+            model = RandomForestClassifier(
+                random_state=self.random_state,
+                class_weight='balanced',
+                n_estimators=100,
+                max_depth=10,
+                n_jobs=-1
+            )
+            model.fit(self.X_train, self.y_train)
+            
+            metrics, y_pred, y_pred_proba = self._evaluate_model(model, self.X_test, self.y_test, "Random Forest")
+            
+            mlflow.log_params(model.get_params())
+            mlflow.log_metrics(metrics)
+            mlflow.log_artifact(self._log_confusion_matrix(self.y_test, y_pred, "Random_Forest"))
+            mlflow.log_artifact(self._log_roc_curve(self.y_test, y_pred_proba, "Random_Forest"))
+            
+            signature = infer_signature(self.X_train, model.predict(self.X_train))
+            mlflow.sklearn.log_model(model, "random_forest_model", signature=signature)
+            
+            print("\nMetrics:")
+            for metric, value in metrics.items():
+                print(f"  {metric}: {value:.4f}")
+            
+            self.models['Random Forest'] = model
+            self.results['Random Forest'] = metrics
+            
+            return model, metrics
+    
+    def train_xgboost(self):
+        """Train XGBoost model"""
+        print("\n" + "="*60)
+        print("TRAINING XGBOOST")
+        print("="*60)
+        
+        with mlflow.start_run(run_name="XGBoost", nested=True):
+            scale_pos_weight = (self.y_train == 0).sum() / (self.y_train == 1).sum()
+            
+            model = XGBClassifier(
+                random_state=self.random_state,
+                scale_pos_weight=scale_pos_weight,
+                eval_metric='logloss',
+                use_label_encoder=False,
+                n_estimators=100,
+                max_depth=5,
+                learning_rate=0.1,
+                verbosity=0
+            )
+            model.fit(self.X_train, self.y_train)
+            
+            metrics, y_pred, y_pred_proba = self._evaluate_model(model, self.X_test, self.y_test, "XGBoost")
+            
+            mlflow.log_params(model.get_params())
+            mlflow.log_metrics(metrics)
+            mlflow.log_artifact(self._log_confusion_matrix(self.y_test, y_pred, "XGBoost"))
+            mlflow.log_artifact(self._log_roc_curve(self.y_test, y_pred_proba, "XGBoost"))
+            
+            signature = infer_signature(self.X_train, model.predict(self.X_train))
+            mlflow.sklearn.log_model(model, "xgboost_model", signature=signature)
+            
+            print("\nMetrics:")
+            for metric, value in metrics.items():
+                print(f"  {metric}: {value:.4f}")
+            
+            self.models['XGBoost'] = model
+            self.results['XGBoost'] = metrics
+            
+            return model, metrics
+    
+    def train_all_models(self):
+        """Train all models and compare results"""
+        print("\n" + "="*60)
+        print("TRAINING ALL MODELS")
+        print("="*60)
+        
+        mlflow.set_experiment("Credit_Risk_Model_Experiment")
+        
+        self.train_logistic_regression()
+        self.train_random_forest()
+        self.train_xgboost()
+        
+        self.select_best_model()
+        
+        return self.results
+    
+    def select_best_model(self):
+        """Select best model based on ROC-AUC score"""
+        print("\n" + "="*60)
+        print("MODEL COMPARISON")
+        print("="*60)
+        
+        comparison = pd.DataFrame(self.results).T
+        comparison = comparison.sort_values('roc_auc', ascending=False)
+        
+        print("\nModel Performance Comparison:")
+        print(comparison.round(4))
+        
+        self.best_model_name = comparison.index[0]
+        self.best_model = self.models[self.best_model_name]
+        
+        print(f"\n🏆 BEST MODEL: {self.best_model_name}")
+        print(f"   ROC-AUC: {comparison.loc[self.best_model_name, 'roc_auc']:.4f}")
+        
+        # Save best model
+        os.makedirs('models', exist_ok=True)
+        joblib.dump(self.best_model, 'models/best_model.pkl')
+        print(f"\nBest model saved to: models/best_model.pkl")
+        
+        return self.best_model, self.best_model_name
+    
+    def generate_report(self):
+        """Generate model evaluation report"""
+        print("\n" + "="*60)
+        print("MODEL EVALUATION REPORT")
+        print("="*60)
+        
+        report = f"""
+CREDIT RISK MODEL EVALUATION REPORT
+===================================
+
+BEST MODEL: {self.best_model_name}
+
+Performance Metrics:
+"""
+        for metric, value in self.results[self.best_model_name].items():
+            report += f"  {metric}: {value:.4f}\n"
+        
+        os.makedirs('reports', exist_ok=True)
+        with open('reports/model_evaluation_report.txt', 'w') as f:
+            f.write(report)
+        
+        print(report)
+        return report
 
 
 def main():
-    """Example training pipeline."""
-    print("= - train.py:161" * 50)
-    print("Credit Risk Model Training Pipeline - train.py:162")
-    print("= - train.py:163" * 50)
+    print("="*60)
+    print("CREDIT RISK MODEL TRAINING - TASK 5")
+    print("="*60)
     
-    # Generate synthetic data for demonstration
-    np.random.seed(42)
-    n_samples = 10000
+    trainer = CreditRiskModelTrainer(random_state=42, test_size=0.3)
+    trainer.load_and_split_data()
+    trainer.train_all_models()
+    trainer.generate_report()
     
-    data = pd.DataFrame({
-        'income': np.random.normal(50000, 20000, n_samples),
-        'debt': np.random.normal(20000, 15000, n_samples),
-        'credit_age_years': np.random.exponential(10, n_samples),
-        'num_delinquencies': np.random.poisson(0.5, n_samples),
-        'credit_utilization': np.random.beta(2, 5, n_samples),
-        'num_credit_cards': np.random.poisson(2, n_samples),
-        'default': np.random.binomial(1, 0.1, n_samples)  # 10% default rate
-    })
+    print("\n" + "="*60)
+    print("TRAINING COMPLETE!")
+    print("="*60)
+    print(f"\n✅ Best model: {trainer.best_model_name}")
+    print(f"✅ Model saved to: models/best_model.pkl")
     
-    # Prepare data
-    X, y = prepare_training_data(data, target_col='default')
-    
-    # Split data
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.3, random_state=42, stratify=y
-    )
-    
-    print(f"\nTraining set: {X_train.shape} - train.py:187")
-    print(f"Test set: {X_test.shape} - train.py:188")
-    print(f"Default rate  Train: {y_train.mean():.2%}, Test: {y_test.mean():.2%} - train.py:189")
-    
-    # Train interpretable model (Logistic Regression with WoE)
-    print("\n - train.py:192" + "=" * 30)
-    print("Training Logistic Regression (Interpretable) - train.py:193")
-    print("= - train.py:194" * 30)
-    
-    lr_model = CreditRiskModel(model_type='logistic_regression')
-    lr_metrics = lr_model.train(X_train, y_train, use_woe=True, C=0.1)
-    
-    print(f"\nLogistic Regression Results: - train.py:199")
-    print(f"AUCROC: {lr_metrics['auc_roc']:.4f} - train.py:200")
-    print(f"Gini: {lr_metrics['gini']:.4f} - train.py:201")
-    print(f"Accuracy: {lr_metrics['accuracy']:.4f} - train.py:202")
-    
-    # Test performance
-    y_test_proba = lr_model.predict_proba(X_test)
-    test_auc = roc_auc_score(y_test, y_test_proba)
-    print(f"Test AUCROC: {test_auc:.4f} - train.py:207")
-    
-    # Train high-performance model (XGBoost)
-    print("\n - train.py:210" + "=" * 30)
-    print("Training XGBoost (High Performance) - train.py:211")
-    print("= - train.py:212" * 30)
-    
-    xgb_model = CreditRiskModel(model_type='xgboost')
-    xgb_metrics = xgb_model.train(X_train, y_train, n_estimators=100, max_depth=5)
-    
-    print(f"\nXGBoost Results: - train.py:217")
-    print(f"AUCROC: {xgb_metrics['auc_roc']:.4f} - train.py:218")
-    print(f"Gini: {xgb_metrics['gini']:.4f} - train.py:219")
-    print(f"Accuracy: {xgb_metrics['accuracy']:.4f} - train.py:220")
-    
-    # Test performance
-    y_test_proba_xgb = xgb_model.predict_proba(X_test)
-    test_auc_xgb = roc_auc_score(y_test, y_test_proba_xgb)
-    print(f"Test AUCROC: {test_auc_xgb:.4f} - train.py:225")
-    
-    # Save models
-    lr_model.save('models/logistic_regression_model.joblib')
-    xgb_model.save('models/xgboost_model.joblib')
-    
-    print("\n - train.py:231" + "=" * 50)
-    print("Training complete! Models saved to 'models/' directory - train.py:232")
-    print("= - train.py:233" * 50)
-    
-    return lr_model, xgb_model
+    return trainer
 
 
 if __name__ == "__main__":
-    main()
+    trainer = main()

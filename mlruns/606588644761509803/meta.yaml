@@ -1,0 +1,9 @@
+artifact_location: file:C:/Users/MUSLIMAH/Desktop/credit-risk-model-1/mlruns/606588644761509803
+creation_time: 1780553355420
+effective_trace_archival_retention: null
+experiment_id: '606588644761509803'
+last_update_time: 1780553355420
+lifecycle_stage: active
+name: Credit_Risk_Model_Experiment
+trace_location: null
+workspace: default

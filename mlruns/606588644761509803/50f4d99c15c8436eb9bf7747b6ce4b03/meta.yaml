@@ -1,0 +1,14 @@
+artifact_uri: file:C:/Users/MUSLIMAH/Desktop/credit-risk-model-1/mlruns/606588644761509803/50f4d99c15c8436eb9bf7747b6ce4b03/artifacts
+end_time: 1780555704504
+entry_point_name: ''
+experiment_id: '606588644761509803'
+lifecycle_stage: active
+run_id: 50f4d99c15c8436eb9bf7747b6ce4b03
+run_name: XGBoost
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1780555698052
+status: 3
+tags: []
+user_id: muslimah

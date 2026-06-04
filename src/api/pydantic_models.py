@@ -1,114 +1,94 @@
+
 """
-Pydantic schemas for FastAPI request/response validation.
+Pydantic models for request and response validation in the Credit Risk API
+
+Author: Muslihm
+Date: June 2026
 """
 
 from pydantic import BaseModel, Field, validator
-from typing import Optional, List, Dict
+from typing import List, Optional, Dict
 from datetime import datetime
 
 
 class CreditApplication(BaseModel):
-    """Schema for a single credit application request."""
+    """
+    Request model for a single credit risk prediction.
+    Matches the features used in model training.
+    """
     
-    income: float = Field(..., gt=0, description="Annual income in USD")
-    debt: float = Field(..., ge=0, description="Total outstanding debt in USD")
-    credit_age_years: float = Field(..., ge=0, le=50, description="Age of oldest credit account in years")
-    num_delinquencies: int = Field(..., ge=0, le=50, description="Number of past due payments in last 2 years")
-    credit_utilization: float = Field(..., ge=0, le=1, description="Credit utilization ratio (0 to 1)")
-    num_credit_cards: int = Field(..., ge=0, le=20, description="Number of active credit cards")
+    # Transaction features
+    Amount: float = Field(..., gt=0, description="Transaction amount in local currency")
+    Value: float = Field(..., ge=0, description="Transaction value")
+    PricingStrategy: int = Field(..., ge=0, le=10, description="Pricing strategy used")
     
-    # Optional fields for richer modeling
-    employment_years: Optional[float] = Field(None, ge=0, description="Years at current employer")
-    home_ownership: Optional[str] = Field(None, description="Rent, Own, Mortgage")
+    # Location features
+    CountryCode: int = Field(..., description="Country code of the transaction")
     
-    @validator('credit_utilization')
-    def validate_utilization(cls, v):
-        if v < 0 or v > 1:
-            raise ValueError('credit_utilization must be between 0 and 1')
-        return v
+    # Product features
+    ProductId: str = Field(..., description="Product identifier")
+    ProductCategory: str = Field(..., description="Product category")
+    
+    # Provider features
+    ProviderId: str = Field(..., description="Provider identifier")
+    ChannelId: str = Field(..., description="Channel identifier")
     
     class Config:
         schema_extra = {
             "example": {
-                "income": 65000,
-                "debt": 15000,
-                "credit_age_years": 8,
-                "num_delinquencies": 1,
-                "credit_utilization": 0.35,
-                "num_credit_cards": 3,
-                "employment_years": 4,
-                "home_ownership": "Mortgage"
+                "Amount": 250.50,
+                "Value": 250.50,
+                "PricingStrategy": 2,
+                "CountryCode": 256,
+                "ProductId": "ProductId_10",
+                "ProductCategory": "financial_services",
+                "ProviderId": "ProviderId_2",
+                "ChannelId": "ChannelId_1"
             }
         }
 
 
 class BatchCreditRequest(BaseModel):
-    """Schema for batch prediction requests."""
-    
+    """
+    Request model for batch predictions.
+    """
     applications: List[CreditApplication] = Field(..., min_items=1, max_items=1000)
 
 
 class PredictionResponse(BaseModel):
-    """Schema for single prediction response."""
-    
-    application_id: Optional[str] = None
-    default_probability: float = Field(..., ge=0, le=1)
-    risk_category: str
-    model_version: str
-    timestamp: datetime
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "application_id": "APP-12345",
-                "default_probability": 0.0345,
-                "risk_category": "Medium Risk",
-                "model_version": "v1.0.0",
-                "timestamp": "2024-01-15T10:30:00Z"
-            }
-        }
+    """
+    Response model for a single prediction.
+    """
+    default_probability: float = Field(..., ge=0, le=1, description="Probability of default/high risk")
+    risk_category: str = Field(..., description="Risk category: Low, Medium, High, Very High")
+    is_high_risk: int = Field(..., ge=0, le=1, description="Binary risk flag (1=High Risk, 0=Low Risk)")
+    model_version: str = Field(..., description="Model version used")
+    timestamp: datetime = Field(..., description="Prediction timestamp")
 
 
 class BatchPredictionResponse(BaseModel):
-    """Schema for batch prediction response."""
-    
+    """
+    Response model for batch predictions.
+    """
     predictions: List[PredictionResponse]
     total_processed: int
     processing_time_ms: float
 
 
-class ModelExplanationResponse(BaseModel):
-    """Schema for model explanation (regulatory compliance)."""
-    
-    default_probability: float
-    risk_category: str
-    model_type: str
-    is_interpretable: bool
-    feature_contributions: Optional[Dict[str, float]] = None
-    intercept: Optional[float] = None
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "default_probability": 0.0345,
-                "risk_category": "Medium Risk",
-                "model_type": "logistic_regression",
-                "is_interpretable": True,
-                "feature_contributions": {
-                    "num_delinquencies": -0.234,
-                    "credit_utilization": -0.187,
-                    "debt_to_income": -0.098
-                },
-                "intercept": -1.234
-            }
-        }
-
-
 class HealthResponse(BaseModel):
-    """Health check response."""
-    
+    """
+    Health check response.
+    """
     status: str
     model_loaded: bool
-    model_type: Optional[str] = None
-    version: str
+    model_version: str
+    timestamp: datetime
+
+
+class ErrorResponse(BaseModel):
+    """
+    Error response model.
+    """
+    error: str
+    detail: Optional[str] = None
     timestamp: datetime

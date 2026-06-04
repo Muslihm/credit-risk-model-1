@@ -44,4 +44,5 @@ models/
 
 # Logs
 logs/
-*.log
+*.log*.docx
+*.doc

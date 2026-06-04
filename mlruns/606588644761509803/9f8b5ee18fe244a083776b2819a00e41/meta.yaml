@@ -1,0 +1,14 @@
+artifact_uri: file:C:/Users/MUSLIMAH/Desktop/credit-risk-model-1/mlruns/606588644761509803/9f8b5ee18fe244a083776b2819a00e41/artifacts
+end_time: 1780553355970
+entry_point_name: ''
+experiment_id: '606588644761509803'
+lifecycle_stage: active
+run_id: 9f8b5ee18fe244a083776b2819a00e41
+run_name: Logistic_Regression
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1780553355944
+status: 4
+tags: []
+user_id: muslimah
