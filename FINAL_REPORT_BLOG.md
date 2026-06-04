@@ -193,6 +193,16 @@ Model	Accuracy	Precision	Recall	F1 Score	ROC-AUC
 Logistic Regression	0.947	0.45	0.32	0.37	0.82
 Random Forest	0.952	0.52	0.38	0.44	0.85
 XGBoost	0.956	0.55	0.42	0.48	0.87
+Visualizations
+
+https://plots/model_comparison.png
+*Figure 4: ROC-AUC comparison across all three models*
+
+https://plots/confusion_matrix_XGBoost.png
+*Figure 5: Confusion matrix for the best-performing XGBoost model*
+
+https://plots/roc_curve_XGBoost.png
+*Figure 6: ROC curve showing excellent discriminative ability (AUC=0.87)*
 Best Model: XGBoost
 
     ROC-AUC: 0.87
@@ -221,6 +231,70 @@ mlflow.log_metrics({
 # Log artifacts
 mlflow.log_artifact('confusion_matrix.png')
 mlflow.log_artifact('roc_curve.png')
+MLflow UI Screenshots
+Experiment Overview
+
+https://screenshots/mlflow_experiments.png
+Figure 7: MLflow UI showing all experiment runs with sorted metrics
+Run Details
+
+https://screenshots/mlflow_run_details.png
+Figure 8: Detailed view of XGBoost run with parameters, metrics, and artifacts
+Model Registry
+
+https://screenshots/mlflow_registry.png
+Figure 9: Registered model "Credit_Risk_Best_Model" with versioning
+How to View MLflow UI
+# Start MLflow server
+mlflow ui --port 5000
+
+# Open in browser
+http://localhost:5000
+REST API Deployment
+API Endpoints
+Endpoint	Method	Description
+/health	GET	Health check
+/predict	POST	Single prediction
+/predict/batch	POST	Batch (up to 1000)
+/model/info	GET	Model metadata
+/docs	GET	Swagger UI
+Sample Request
+bash
+
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Amount": 250.50,
+    "Value": 250.50,
+    "PricingStrategy": 2,
+    "CountryCode": 256,
+    "ProductId": "ProductId_10",
+    "ProductCategory": "financial_services",
+    "ProviderId": "ProviderId_2",
+    "ChannelId": "ChannelId_1"
+  }'
+
+Sample Response
+json
+
+{
+  "default_probability": 0.0345,
+  "risk_category": "Medium Risk",
+  "is_high_risk": 0,
+  "model_version": "v1.0.0",
+  "timestamp": "2026-06-04T10:30:00Z"
+}
+
+Risk Categories
+Probability 	Risk Category	 Action
+< 2%	        Low Risk	     Auto-approve
+2-5%	        Medium Risk	     Standard review
+5-10%	        High Risk	     Enhanced review
+> 10%	        Very High Risk	 Manual underwriting
+API Documentation
+
+https://screenshots/swagger_ui.png
+*Figure 10: FastAPI auto-generated Swagger documentation*
 Docker Deployment
 # Build and run with Docker Compose
 docker-compose up --build
